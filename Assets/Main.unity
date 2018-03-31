@@ -227,6 +227,12 @@ MonoBehaviour:
   DisplaySplitted: 1
   MultiplyByPDF: 1
   MaxCosineDifference: 0.01
+  CornetteShanksPDF_Assymetry: 0.76
+  DescreteCDFNumSamplesPowOf2: 5
+  DescretePDFMinBound: 0
+  DescretePDFMaxBound: 0
+  DescretePDF: []
+  DescreteCDF: []
 --- !u!23 &1086253458
 MeshRenderer:
   m_ObjectHideFlags: 0

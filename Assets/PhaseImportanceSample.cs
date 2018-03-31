@@ -12,11 +12,26 @@ public class PhaseImportanceSample : MonoBehaviour
     [Range(0.0f, 0.1f)]
     public float MaxCosineDifference = 0.01f;
 
+    [Range(-1.0f, 1.0f)]
+    public float CornetteShanksPDF_Assymetry = 0.76f;
+
+    [Range(3, 8)]
+    public int DescreteCDFNumSamplesPowOf2 = 5;
+
+    public float DescretePDFMinBound = 0.0f;
+    public float DescretePDFMaxBound = 0.0f;
+
+    public float[] DescretePDF = null;
+    public float[] DescreteCDF = null;
+
+    public delegate float DelegatePDF(float CosTheta);
+
     static Vector3 SphericalToCartesian(float PhiAngle, float CosTheta)
     {
-        if (Mathf.Clamp(CosTheta, -1.0f, 1.0f) != CosTheta)
+        float ClampedCosine = Mathf.Clamp(CosTheta, -1.0f, 1.0f);
+        if (ClampedCosine != CosTheta)
         {
-            Debug.Log("Broken CosTheta = " + CosTheta);
+            //Debug.Log("Broken CosTheta = " + CosTheta);
         }
 
         float SinTheta = Mathf.Sqrt(1.0f - CosTheta * CosTheta);
@@ -33,16 +48,52 @@ public class PhaseImportanceSample : MonoBehaviour
         return 0.1f;
     }
 
+    float CornetteShanksPDF(float CosTheta)
+    {
+        if (MultiplyByPDF)
+        {
+            float g = CornetteShanksPDF_Assymetry;
+            float d = 1.0f + g * (g - 2.0f * CosTheta);
+            float g2 = g * g;
+            float d3 = d * d * d;
+            float Den = 8.0f * Mathf.PI * (2.0f + g2) * Mathf.Sqrt(d3);
+            float Nom = (1.0f - g2) * 3.0f * (1.0f + CosTheta * CosTheta);
+            return Nom / Den;
+        }
+        return 0.1f;
+    }
+
+    public static float RayleighMDF(float CosTheta)
+    {
+        return (3.0f / 8.0f) * (1.0f + CosTheta * CosTheta) * Mathf.Sqrt(1.0f - CosTheta * CosTheta);
+    }
+
+    public float CornetteShanksMDF(float CosTheta)
+    {
+        float g = CornetteShanksPDF_Assymetry;
+        float d = 1.0f + g * (g - 2.0f * CosTheta);
+        float g2 = g * g;
+        float d3 = d * d * d;
+        float Den = 4.0f * (2.0f + g2) * Mathf.Sqrt(d3);
+        float Nom = (1.0f - g2) * 3.0f * (1.0f + CosTheta * CosTheta) * Mathf.Sqrt(1.0f - CosTheta * CosTheta);
+        return Nom / Den;
+    }
+
+    public static float SampleRayleigh(float UnitRandomValue)
+    {
+        float b = 4.0f * UnitRandomValue - 2.0f;
+        float a = Mathf.Pow(Mathf.Sqrt(b * b + 1.0f) - b, 1.0f / 3.0f);
+        float CosTheta = 1.0f / a - a;
+        return CosTheta;
+    }
+
     Vector3 ImportanceSampleRayleigh(Vector2 xi)
     {
         float Phi = xi.x;
         float CosTheta = xi.y;
         // Remap from [-1.0, 1.0] to [0.0 1.0]
         float Param = CosTheta * 0.5f + 0.5f;
-        float b = 4.0f * Param - 2.0f;
-        float a = Mathf.Pow(Mathf.Sqrt(b * b + 1.0f) - b, 1.0f / 3.0f);
-        CosTheta = 1.0f / a - a;
-        return SphericalToCartesian(Phi, CosTheta) * RayleighPDF(CosTheta);
+        return SphericalToCartesian(Phi, SampleRayleigh(Param)) * RayleighPDF(CosTheta);
     }
 
     Vector3 ImportanceSampleUniform(Vector2 xi)
@@ -131,8 +182,72 @@ public class PhaseImportanceSample : MonoBehaviour
         return new Color(r, g, b, 1.0f);
     }
 
+    public float SampleDescretePDF(float UnitRandomValue)
+    {
+        for (int i = 0; i < DescreteCDF.Length; ++i)
+        {
+            if (UnitRandomValue < DescreteCDF[i])
+            {
+                float IntervalFraction = (UnitRandomValue - DescreteCDF[i - 1]) / (DescreteCDF[i] - DescreteCDF[i - 1]);
+                float InvertedCDFValue = (IntervalFraction + (float)(i - 1)) / (float)(DescreteCDF.Length - 1);
+                return Mathf.Cos(DescretePDFMinBound + (DescretePDFMaxBound - DescretePDFMinBound) * InvertedCDFValue);
+            }
+        }
+        return 1.0f;
+    }
+
+    public Vector3 ImportanceSampleDescretePDF(Vector2 xi, DelegatePDF PDF)
+    {
+        float Phi = xi.x;
+        float CosTheta = xi.y;
+        // Remap from [-1.0, 1.0] to [0.0 1.0]
+        float Param = CosTheta * 0.5f + 0.5f;
+        return SphericalToCartesian(Phi, SampleDescretePDF(Param)) * PDF(CosTheta);
+    }
+
+    public void PrecomputeDescretePDF(float MinBound, float MaxBound, DelegatePDF PDF)
+    {
+        int DescreteCDF_NumSamples = 1 << DescreteCDFNumSamplesPowOf2;
+
+        if (DescreteCDF != null && DescreteCDF.Length != DescreteCDF_NumSamples)
+        {
+            DescretePDF = null;
+            DescreteCDF = null;
+        }
+
+        if (DescreteCDF == null)
+        {
+            DescretePDF = new float[DescreteCDF_NumSamples];
+            DescreteCDF = new float[DescreteCDF_NumSamples];
+
+            int NumIntervals = DescreteCDF_NumSamples - 1;
+
+            float Dx = (MaxBound - MinBound) / (float)NumIntervals;
+
+            DescretePDFMinBound = MinBound;
+            DescretePDFMaxBound = MaxBound;
+
+            DescretePDF[0] = PDF(Mathf.Cos(MinBound));
+            DescreteCDF[0] = 0.0f;
+
+            for (int i = 1; i < NumIntervals; ++i)
+            {
+                float X = MinBound + Dx * (float)i;
+                float PdfX = PDF(Mathf.Cos(X));
+
+                DescretePDF[i] = PdfX;
+                DescreteCDF[i] = PdfX * Mathf.Abs(Dx) + DescreteCDF[i - 1];
+            }
+
+            DescretePDF[NumIntervals] = PDF(Mathf.Cos(MaxBound));
+            DescreteCDF[NumIntervals] = 1.0f;
+        }
+    }
+
     void Update ()
     {
+        PrecomputeDescretePDF(Mathf.PI, 0.0f, CornetteShanksMDF);
+
         int NumSamples = 1 << NumSamplesPowOf2;
 
         for (int i = 0; i < NumSamples; ++i)
@@ -145,6 +260,8 @@ public class PhaseImportanceSample : MonoBehaviour
 
             Vector3 Dir3 = 5.0f * ImportanceSampleUniform(xi2);
             Vector3 Dir4 = 5.0f * ImportanceSampleRayleigh(xi2);
+
+            Vector3 Dir5 = 5.0f * ImportanceSampleDescretePDF(xi, CornetteShanksPDF);
 
             float Dot = Vector3.Dot(Vector3.Normalize(Dir1), Vector3.Normalize(Dir2));
             float Dot2 = Vector3.Dot(Vector3.Normalize(Dir3), Vector3.Normalize(Dir4));
@@ -172,6 +289,7 @@ public class PhaseImportanceSample : MonoBehaviour
                 Debug.DrawLine(gameObject.transform.position + Vector3.up + Dir3, gameObject.transform.position + Vector3.up + Dir4, GetColor2(ColorFactor2));
             }
 
+            DrawLocation(Dir5 - Vector3.up, Color.blue);
         }
     }
 }
